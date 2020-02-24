@@ -7,4 +7,12 @@
 
 const mochaTestBridge = window.mochaTestBridge || {}
 mochaTestBridge.myProp = "exists";
+
+const { plugins } = window.__nimbus!
+const callbackTestExtension = plugins.callbackTestExtension || (plugins.callbackTestExtension = {})
+
+callbackTestExtension.addOne = (x: number) => Promise.resolve(x + 1)
+callbackTestExtension.failWith = (message: string) => Promise.reject(message)
+callbackTestExtension.wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
+
 export default mochaTestBridge

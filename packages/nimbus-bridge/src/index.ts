@@ -20,6 +20,12 @@ declare global {
   }
 }
 
+interface FinishedPromise {
+  promiseId: string;
+  err?: any;
+  result?: any;
+}
+
 class Nimbus {
   public constructor() {
     if (
@@ -37,6 +43,14 @@ class Nimbus {
         });
       });
     }
+
+    // When the page unloads, reject all Promises for native-->web calls.
+    window.addEventListener("unload", (): void => {
+      Object.entries(this.jsPromisehandlers).forEach(([promiseId, handler]) => {
+        handler({ promiseId, err: "ERROR_PAGE_UNLOADED" });
+      });
+      this.jsPromisehandlers = {};
+    });
   }
 
   // Store any plugins injected by the native app here.
@@ -47,6 +61,9 @@ class Nimbus {
     [s: string]: { resolve: Function; reject: Function };
   } = {};
   private callbacks: { [s: string]: Function } = {};
+  private jsPromisehandlers: {
+    [s: string]: (msg: FinishedPromise) => void;
+  } = {};
 
   // Dictionary to manage message&subscriber relationship.
   public listenerMap: { [s: string]: Function[] } = {};
@@ -111,7 +128,7 @@ class Nimbus {
     return clonedArgs;
   };
 
-  public callCallback = (callbackId: string, args: any[]) => {
+  public callCallback = (callbackId: string, args: any[]): void => {
     if (this.callbacks[callbackId]) {
       this.callbacks[callbackId](...args);
     }
@@ -119,17 +136,17 @@ class Nimbus {
 
   // TODO: This version is called by Android, callCallback is called by iOS. The
   // two need to be consolidated.
-  public callCallback2 = (callbackId: string, ...args: any[]) => {
+  public callCallback2 = (callbackId: string, ...args: any[]): void => {
     this.callCallback(callbackId, args);
   };
 
-  public releaseCallback = (callbackId: string) => {
+  public releaseCallback = (callbackId: string): void => {
     delete this.callbacks[callbackId];
   };
 
   // Native side will callback this method. Match the callback to stored promise
   // in the storage
-  public resolvePromise = (promiseUuid: string, data: any, error: any) => {
+  public resolvePromise = (promiseUuid: string, data: any, error: any): void => {
     if (error) {
       this.promises[promiseUuid].reject(data);
     } else {
@@ -152,7 +169,7 @@ class Nimbus {
    * @return Number of listeners that were called by the
    *     message.
    */
-  public broadcastMessage = (message: string, arg: any) => {
+  public broadcastMessage = (message: string, arg: any): number => {
     let messageListeners = this.listenerMap[message];
     var handlerCallCount = 0;
     if (messageListeners) {
@@ -178,7 +195,7 @@ class Nimbus {
    * @param listener A method that should be triggered when a message is
    *     broadcasted.
    */
-  public subscribeMessage = (message: string, listener: Function) => {
+  public subscribeMessage = (message: string, listener: Function): void => {
     let messageListeners = this.listenerMap[message];
     if (!messageListeners) {
       messageListeners = [];
@@ -198,7 +215,7 @@ class Nimbus {
    * @param listener A method that should be triggered when a
    *     message is broadcasted.
    */
-  public unsubscribeMessage = (message: string, listener: Function) => {
+  public unsubscribeMessage = (message: string, listener: Function): void => {
     let messageListeners = this.listenerMap[message];
     if (messageListeners) {
       let counter = 0;
@@ -215,6 +232,66 @@ class Nimbus {
       }
     }
   };
+
+  /**
+   * Call a Promise-returning function and track its resolution/rejection.
+   *
+   * @param namespace String connection name, used both to find the function to
+   * invoke (window.${namespace}.${name} as well as to identify the message
+   * handler to inform about the resolutin/rejection of the Promise.
+   * @param name String name of the function on window.${namespace} to invoke.
+   * @param args arguments to pass to the specified function.
+   */
+  public callAwaiting = (
+    namespace: string,
+    name: string,
+    promiseId: string,
+    ...args: any[]
+  ): string | null => {
+    const ext = this.plugins[namespace];
+    if (!ext) {
+      return `Plugin ${namespace} was not found: window.__nimbus.plugins.${namespace}`;
+    }
+    const fn = ext[name];
+    if (!fn) {
+      return `Plugin function ${namespace}.${name} was not found: window.__nimbus.plugins.${namespace}.${name}`;
+    }
+    try {
+      const promise = fn(...args);
+      const handler = this.promiseFinishedHandler(namespace, name);
+      promise.catch((err: any): void => handler({ promiseId, err }));
+      promise.then((result: any): void => handler({ promiseId, result }));
+      this.jsPromisehandlers[promiseId] = handler;
+    } catch (e) {
+      return `${e}`;
+    }
+
+    // Success
+    return null;
+  };
+
+  private promiseFinishedHandler = (
+    namespace: string,
+    functionName: string
+  ): ((msg: FinishedPromise) => void) => {
+    let alreadyRun = false;
+
+    return window.webkit && window.webkit.messageHandlers
+      ? (msg: FinishedPromise): void => {
+        if (!alreadyRun) {
+          window.webkit.messageHandlers[namespace].postMessage(msg);
+          alreadyRun = true;
+          delete this.jsPromisehandlers[msg.promiseId];
+        }
+      }
+      : (msg: FinishedPromise): void => {
+        if (!alreadyRun) {
+          this.plugins[namespace][`__${functionName}_finished`](msg.promiseId, msg.err || "", msg.result || null);
+          alreadyRun = true;
+          delete this.jsPromisehandlers[msg.promiseId];
+        }
+      };
+  }
 }
 
 const nimbus = new Nimbus();

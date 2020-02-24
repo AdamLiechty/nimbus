@@ -5,10 +5,11 @@
 // For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
 //
 
+import __nimbus from "nimbus-bridge";
 import "./nimbus-core-tests";
 import "./broadcast-tests";
 import "./callback-encodable-tests";
-import __nimbus from "nimbus-bridge";
+import "./promised-javascript-tests"
 
 window.onload = () => {
   __nimbus;
